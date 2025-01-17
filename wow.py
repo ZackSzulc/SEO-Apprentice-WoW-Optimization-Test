@@ -1,6 +1,6 @@
 import pandas as pd
-import itertools
 from typing import Dict, List, Tuple
+import matplotlib.pyplot as plt
 
 # HEADS UP: Sometimes my comments are just my thoughts as I write or organize my code. 
 # Most times they're helpful
@@ -38,8 +38,26 @@ EQUIPMENT_SLOTS = [
     "Wrist Guards.xlsx"
 ]
 
+# this function creates a visual representation of the cost vs power analysis
+def visualize_cost_vs_power(builds):
+    costs = [build['cost'] for build in builds]
+    powers = [build['power'] for build in builds]
+    
+    plt.figure(figsize=(10, 6))
+    plt.scatter(costs, powers)
+    plt.title('Cost vs Power Analysis')
+    plt.xlabel('Cost')
+    plt.ylabel('Power')
+    
+    # Add build numbers as labels
+    for i, (cost, power) in enumerate(zip(costs, powers)):
+        plt.annotate(f'Build {i+1}', (cost, power))
+    
+    plt.show()
+
+# this function calculates power, constraints and cost for a single item
+# useful for loop processing
 def calculate_item_stats(data: Dict) -> Dict:
-    # Calculate power, constraints and cost for a single item
     total_power = 0
     total_constraints = {constraint: 0 for constraint in CONSTRAINTS}
     total_cost = 0
@@ -59,8 +77,8 @@ def calculate_item_stats(data: Dict) -> Dict:
         "Cost": total_cost
     }
 
+# this function processes an excel file and returns a dictionary of items and their stats
 def process_equipment_file(file: str) -> Dict:
-    # Process an equipment/armor file and return formatted data (AKA: data structures I can programatically work with)
     df = pd.read_excel(file) # create a dataframe from the excel file
     items = df.iloc[:, 0] # get the item names
     attributes = df.columns[1:] # get the attribute names
@@ -76,88 +94,105 @@ def process_equipment_file(file: str) -> Dict:
         for item, data in correlations.items()
     }
 
-def find_valid_build(sorted_items_by_slot, build_type: str) -> dict:
-    # Find the best valid build that meets all constraints
-    current_offset = 0
-    valid_build = None
+# this function checks if the constraints are met for a given build
+def constraints_met(build: Dict) -> bool:
+    total_constraints = {
+        constraint: sum(item[0][1]['Constraints'][constraint] 
+        for item in build.values())
+        for constraint in CONSTRAINTS
+    }
     
-    # Keep trying builds until a valid one is found
-    while not valid_build:
-        current_build = {}
-        for slot, items in sorted_items_by_slot.items():
-            if current_offset < len(items):
-                current_build[slot] = items[current_offset]
+    return all(total_constraints[const] >= min_val 
+              for const, min_val in CONSTRAINTS.items())
+
+# this function displays the builds in text format
+def display_builds(builds: List[Dict]):
+    for i, build_data in enumerate(builds, 1):
+        print(f"\nBuild #{i}")
+        print("-" * 50)
         
-        if not current_build:
-            break
-            
-        # Constraints are necessary. Let's make sure the build meets them.
+        for slot, item in build_data['build'].items():
+            item_name = item[0][0]
+            item_power = item[0][1]['Power']
+            print(f"{slot:<15} : {item_name:<30} (Power: {item_power:.2f})")
+        
+        # Calculate total constraints for this build
         total_constraints = {
-            constraint: sum(item[1]['Constraints'][constraint] 
-            for item in current_build.values())
+            constraint: sum(item[0][1]['Constraints'][constraint] 
+            for item in build_data['build'].values())
             for constraint in CONSTRAINTS
         }
         
-        if all(total_constraints[const] >= min_val 
-               for const, min_val in CONSTRAINTS.items()):
-            valid_build = current_build
-            break
-            
-        current_offset += 1
+        print(f"\nBuild {i} Summary:")
+        print(f"Total Power: {build_data['power']:.2f}")
+        print(f"Total Cost: {build_data['cost']}")
+        print(f"Power/Cost Ratio: {build_data['power']/build_data['cost']:.2f}")
+        print(f"Total Constraints: {total_constraints}")
+
+# this function generates builds based on the power_by_slot dictionary defined in main()
+# as of right now it only generates 10 builds, but it could be modified to generate more
+def generate_builds(power_by_slot: Dict, max_builds: int = 10) -> List[Dict]:
+    builds = []
     
-    return valid_build
+    # First find highest power valid builds
+    for i in range(10):  # Try top 10 items per slot, should already be sorted. I've found that less than 10 items per slot generates a more expensive build list. 10 Gives a more balanced distribution.
+        current_build = {
+            slot: [items[i]] for slot, items in power_by_slot.items()
+        }
+        
+        if constraints_met(current_build):
+            builds.append({
+                'build': current_build.copy(),
+                'power': sum(item[0][1]['Power'] for item in current_build.values()),
+                'cost': sum(item[0][1]['Cost'] for item in current_build.values())
+            })
+    
+    # If we need more builds, generate variations from the best build
+    if builds and len(builds) < max_builds:
+        best_build = builds[0]['build']
+        slots = list(power_by_slot.keys())
+        
+        # generations will work by swapping out the weakest item in the best build
+        while len(builds) < max_builds:
+            weakest_slot = min(slots, key=lambda s: best_build[s][0][1]['Power'])
+            items = power_by_slot[weakest_slot]
+            current_idx = next((i for i, item in enumerate(items) 
+                              if item == best_build[weakest_slot][0]), 0)
+            
+            if current_idx + 1 < len(items):
+                best_build[weakest_slot] = [items[current_idx + 1]]
+                if constraints_met(best_build):
+                    builds.append({
+                        'build': best_build.copy(),
+                        'power': sum(item[0][1]['Power'] for item in best_build.values()),
+                        'cost': sum(item[0][1]['Cost'] for item in best_build.values())
+                    })
+            
+            slots.remove(weakest_slot)
+            if not slots:
+                break
+    
+    builds.sort(key=lambda x: x['power'], reverse=True)
+    return builds[:max_builds]
 
 def main():
-     # Create a dictionary to store the processed equipment/armor data
-    results_by_file = {}
+    # Create a dictionary to store the processed equipment/armor data
+    power_by_slot = {}
     
-    # Process all equipment files
+    # Process then sort all equipment files
     for file in EQUIPMENT_SLOTS:
         file_key = file.replace('.xlsx', '')
         result = process_equipment_file(file)
-        items = list(result.items())
-        
-        # Create three sorted lists for different optimization goals
-        results_by_file[file_key] = {
-            'optimal': sorted(items, 
-                key=lambda attr: attr[1]['Power'] / attr[1]['Cost'] if attr[1]['Cost'] > 0 else attr[1]['Power'] / 0.0001, 
-                reverse=True),
-            'power': sorted(items, 
-                key=lambda attr: attr[1]['Power'], 
-                reverse=True),
-            'cost': sorted(items, 
-                key=lambda attr: attr[1]['Cost'])
-        }
+        power_by_slot[file_key] = sorted(
+            result.items(), 
+            key=lambda attr: attr[1]['Power'], 
+            reverse=True
+        )
 
-    # Find valid builds for each optimization type
-    builds = {
-        'Optimal Build': find_valid_build({slot: items['optimal'] 
-            for slot, items in results_by_file.items()}, 'optimal'),
-        'Highest Power Build': find_valid_build({slot: items['power'] 
-            for slot, items in results_by_file.items()}, 'power'),
-        'Lowest Cost Build': find_valid_build({slot: items['cost'] 
-            for slot, items in results_by_file.items()}, 'cost')
-    }
-    
-    # Display results for each valid build
-    for build_name, build_items in builds.items():
-        if build_items:
-            total_power = sum(item[1]['Power'] for item in build_items.values())
-            total_cost = sum(item[1]['Cost'] for item in build_items.values())
-            total_constraints = {
-                constraint: sum(item[1]['Constraints'][constraint] 
-                for item in build_items.values())
-                for constraint in CONSTRAINTS
-            }
-            
-            print(f"\n{build_name}:")
-            print("-" * 50)
-            for slot, item in build_items.items():
-                print(f"{slot}: {item[0]}")
-            print(f"\nTotal Power: {total_power}")
-            print(f"Total Cost: {total_cost}")
-            print(f"Power/Cost Ratio: {total_power/total_cost if total_cost > 0 else 0}")
-            print(f"Constraints: {total_constraints}")
+    # Make the builds then display them
+    builds = generate_builds(power_by_slot)
+    display_builds(builds)
+    visualize_cost_vs_power(builds)
 
 if __name__ == "__main__":
     main()
